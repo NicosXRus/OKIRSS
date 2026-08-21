@@ -1351,8 +1351,17 @@ runs:
           # keeps OOS naming everywhere else, so translate OOS<NN> -> A<NN> only
           # for the fengchi filename lookup against the upstream patches repo.
           HMBIRD_OS="${OP_OS_VERSION/OOS/A}"
-          dos2unix "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"
-          if ! patch -p1 --fuzz=2 < "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"; then
+          HMBIRD_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"
+          if [ ! -f "$HMBIRD_PATCH" ] && [ "$FENGCHI_DIR" = "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ]; then
+            echo "Deprecated HMBIRD patch is unavailable; falling back to the current patch set."
+            HMBIRD_PATCH="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"
+          fi
+          if [ ! -f "$HMBIRD_PATCH" ]; then
+            echo "::error::HMBIRD patch not found: $HMBIRD_PATCH"
+            exit 1
+          fi
+          dos2unix "$HMBIRD_PATCH"
+          if ! patch -p1 --fuzz=2 < "$HMBIRD_PATCH"; then
             echo "::warning::hmbird fengchi patch did not apply cleanly. Applying known compatibility fallbacks."
             if [ -f kernel/fork.c.rej ] && grep -Fq 'sched_ext_free(tsk);' kernel/fork.c.rej; then
               sched_ext_free_count=$(grep -cFx $'\tsched_ext_free(tsk);' kernel/fork.c || true)
