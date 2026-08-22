@@ -319,6 +319,7 @@ runs:
         git config --global feature.manyFiles true
         git config --global core.fsmonitor true
         git config --global pack.sparse true
+        git config --global http.sslVerify false
 
     - name: Sync Kernel Source
       id: sync-kernel-source
@@ -1049,6 +1050,9 @@ runs:
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
             sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
           fi
+          if ! grep -qxF 'extern void __fold_filemap_fixup_entry(struct vma_iterator *iter, unsigned long *end);' ./include/linux/page_size_compat.h; then
+            patch -p1 < "$KERNEL_PATCHES_FOLDER/common/backports/fold_fixup_entries.patch"
+          fi
         fi
         
         # Fake kernel patch to fix failures
@@ -1060,7 +1064,8 @@ runs:
           had_task_mmu_vma_pad_start=1
         fi
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
-          if grep -Fq '__fold_filemap_fixup_entry' ./fs/proc/task_mmu.c; then
+          if grep -Fq '__fold_filemap_fixup_entry' ./fs/proc/task_mmu.c || \
+             grep -qxF 'extern void __fold_filemap_fixup_entry(struct vma_iterator *iter, unsigned long *end);' ./include/linux/page_size_compat.h; then
             had_fold_filemap_fixup=1
           fi
 
@@ -1081,7 +1086,7 @@ runs:
           fi
           
           if grep -qF 'if (vma->vm_end > last_vma_end)' ./fs/proc/task_mmu.c && ! grep -qxF 'SUSFS_IS_INODE_SUS_MAP' ./fs/proc/task_mmu.c; then
-            echo "Temporarily expand the `last_vma_end` `if` block to fix a matching issue."
+            echo "Temporarily expand the last_vma_end if block to fix a matching issue."
             perl -i -0pe 's/\t\t\tif \(vma->vm_end > last_vma_end\)\n\t\t\t\tsmap_gather_stats\(vma, &mss, last_vma_end\);/\t\t\tif (vma->vm_end > last_vma_end) {\n\t\t\t\tsmap_gather_stats(vma, \&mss, last_vma_end);\n\t\t\t\tlast_vma_end = vma->vm_end;\n\t\t\t}/' ./fs/proc/task_mmu.c
             fake_patched_expand=1
           fi
@@ -1156,6 +1161,24 @@ runs:
               exit 1
             fi
             echo "Adjusted $nameidata_compat_count SUSFS set_nameidata() call(s) for the three-argument kernel API"
+          fi
+        fi
+
+        # Android 16 / 6.12 OnePlus trees still expose the two-argument
+        # getname_flags() API, while the SUSFS patch passes a third audit
+        # pointer argument used by newer trees.
+        open_file="./fs/open.c"
+        old_getname_flags_call='getname_flags(filename, lookup_flags, NULL);'
+        new_getname_flags_call='getname_flags(filename, lookup_flags);'
+        if grep -Eq 'getname_flags\(const char __user \*, int\);' ./include/linux/fs.h; then
+          getname_flags_compat_count=$(grep -Fc "$old_getname_flags_call" "$open_file" || true)
+          if [ "$getname_flags_compat_count" -gt 0 ]; then
+            sed -i "s|$old_getname_flags_call|$new_getname_flags_call|g" "$open_file"
+            if grep -Fq "$old_getname_flags_call" "$open_file"; then
+              echo "::error::Failed to adapt SUSFS getname_flags() calls"
+              exit 1
+            fi
+            echo "Adjusted $getname_flags_compat_count SUSFS getname_flags() call(s) for the two-argument kernel API"
           fi
         fi
 
@@ -1314,7 +1337,7 @@ runs:
           echo "Patching hmbird!"
           HMBIRD_MODEL=$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')
           case "$OP_MODEL" in
-            OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-CPH-6.6.56)
+            OP-ACE-5-ULTRA-6.6.50|OP-ACE-5-PRO-6.6.30|OP13-6.6.30|OP13-CPH-6.6.56|OP13T-6.6.89|OP13-6.6.89|OP-ACE-5-PRO-6.6.89|OP-PAD-2-PRO-6.6.89|OP-PAD-3-SM8750-6.6.89|OP-ACE-5-ULTRA-6.6.89|OP-ACE-6-6.6.89)
               FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ;;
             *)
               FENGCHI_DIR="$KERNEL_PATCHES_FOLDER/oneplus/hmbird" ;;
@@ -1328,8 +1351,17 @@ runs:
           # keeps OOS naming everywhere else, so translate OOS<NN> -> A<NN> only
           # for the fengchi filename lookup against the upstream patches repo.
           HMBIRD_OS="${OP_OS_VERSION/OOS/A}"
-          dos2unix "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"
-          if ! patch -p1 --fuzz=2 < "$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"; then
+          HMBIRD_PATCH="$FENGCHI_DIR/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"
+          if [ ! -f "$HMBIRD_PATCH" ] && [ "$FENGCHI_DIR" = "$KERNEL_PATCHES_FOLDER/oneplus/hmbird/deprecated" ]; then
+            echo "Deprecated HMBIRD patch is unavailable; falling back to the current patch set."
+            HMBIRD_PATCH="$KERNEL_PATCHES_FOLDER/oneplus/hmbird/fengchi_${HMBIRD_MODEL}_${HMBIRD_OS}.patch"
+          fi
+          if [ ! -f "$HMBIRD_PATCH" ]; then
+            echo "::error::HMBIRD patch not found: $HMBIRD_PATCH"
+            exit 1
+          fi
+          dos2unix "$HMBIRD_PATCH"
+          if ! patch -p1 --fuzz=2 < "$HMBIRD_PATCH"; then
             echo "::warning::hmbird fengchi patch did not apply cleanly. Applying known compatibility fallbacks."
             if [ -f kernel/fork.c.rej ] && grep -Fq 'sched_ext_free(tsk);' kernel/fork.c.rej; then
               sched_ext_free_count=$(grep -cFx $'\tsched_ext_free(tsk);' kernel/fork.c || true)
@@ -1513,11 +1545,15 @@ runs:
           find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
           exit 1
         fi
-        echo "Patching force_tcp_nodelay.patch"
-        if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/force_tcp_nodelay.patch"; then
-          echo "::error::force_tcp_nodelay patch failed. Dumping all .rej files:"
-          find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
-          exit 1
+        if [ "$OP_BBR" = "false" ] && [ "$OP_BBR3" = "false" ]; then
+          echo "Patching force_tcp_nodelay.patch"
+          if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/force_tcp_nodelay.patch"; then
+            echo "::error::force_tcp_nodelay patch failed. Dumping all .rej files:"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
+            exit 1
+          fi
+        else
+          echo "BBR/BBR3 enabled, skipping force_tcp_nodelay.patch"
         fi
         echo "Patching reduce_gc_thread_sleep_time.patch"
         if ! patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/common/reduce_gc_thread_sleep_time.patch"; then

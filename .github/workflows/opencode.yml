@@ -104,6 +104,9 @@ jobs:
           echo "::endgroup::"
 
           if [[ "$EVENT_NAME" == "schedule" || ( "$EVENT_NAME" == "workflow_dispatch" && ( "$DISPATCH_PROMPT" == "" || "$DISPATCH_PROMPT" == "null" ) ) ]]; then
+            AGENT_CONFLICT_FILES="$RUNNER_TEMP/agent_conflict_files.txt"
+            : > "$AGENT_CONFLICT_FILES"
+
             echo "::group::Automatic Upstream Merge"
             git remote add upstream https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git
             git -c http.extraHeader="" fetch --no-tags upstream main
@@ -113,29 +116,32 @@ jobs:
             echo "::group::Auto-resolve merge conflicts (split by ownership)"
             # GOAL: take ALL upstream changes AND let THIS workflow commit a real 2-parent
             # merge commit (so the sync PR contains the upstream commits + a merge commit
-            # and merge-base advances). Every conflict is resolved deterministically below
-            # -- nothing is left for the agent -- because the agent's tool flattens its
-            # commit to a single parent and would drop the upstream ancestry.
+            # and merge-base advances). Every conflict is provisionally resolved below
+            # before the agent runs, because committing an unresolved merge through the
+            # agent would flatten the upstream ancestry.
             #
             # Non-conflicting upstream edits -- including ones under .github/** -- are
             # ALREADY merged in by `git merge` above, so upstream CI improvements (SusFS
             # support, cache fixes, ...) in areas the fork didn't touch flow in for free.
             #
             # Only directly CONFLICTING hunks are resolved here, split by ownership:
-            #   * Fork-owned CI/docs (.github/**, README, ...) take OURS so the
-            #     workflow can finish and commit the merge while MERGE_HEAD still
-            #     records upstream as the second parent. Non-conflicting upstream
-            #     edits to these paths have already been merged above.
+            #   * Conflicting .github/** files provisionally take OURS so the workflow
+            #     can commit while MERGE_HEAD still records upstream as the second
+            #     parent. Their paths are recorded so the agent can semantically
+            #     reconcile both parents in a normal follow-up commit.
+            #   * Fork-owned docs take OURS without agent review.
             #   * Everything else (device configs, manifests, kernel sources) takes
             #     UPSTREAM; sanitize.py below re-applies the deterministic fork
             #     transforms (uname -> OP-RESUKISU, AnyKernel3 URL, oos* naming).
             git ls-files -u 2>/dev/null | awk '{print $4}' | sort -u | while IFS= read -r f; do
               [ -z "$f" ] && continue
               case "$f" in
-                .github/*|README.md|compatibility.md|LICENSE)
-                  # The agent action flattens an unresolved merge into a
-                  # single-parent commit, so fork-owned conflicts must be
-                  # resolved here to preserve upstream ancestry.
+                .github/*)
+                  printf '%s\n' "$f" >> "$AGENT_CONFLICT_FILES"
+                  git checkout --ours -- "$f" 2>/dev/null || git rm -f --quiet -- "$f" 2>/dev/null || true
+                  git add -- "$f" 2>/dev/null || true
+                  ;;
+                README.md|compatibility.md|LICENSE)
                   git checkout --ours -- "$f" 2>/dev/null || git rm -f --quiet -- "$f" 2>/dev/null || true
                   git add -- "$f" 2>/dev/null || true
                   ;;
@@ -147,6 +153,10 @@ jobs:
                   ;;
               esac
             done
+            sort -u -o "$AGENT_CONFLICT_FILES" "$AGENT_CONFLICT_FILES"
+            AGENT_CONFLICT_COUNT=$(wc -l < "$AGENT_CONFLICT_FILES" | tr -d ' ')
+            echo "OPENCODE_AGENT_CONFLICT_COUNT=$AGENT_CONFLICT_COUNT" >> "$GITHUB_ENV"
+            echo "Conflicting .github files reserved for semantic agent review: $AGENT_CONFLICT_COUNT"
             echo "Remaining unmerged after auto-resolve: $(git ls-files -u 2>/dev/null | awk '{print $4}' | sort -u | wc -l | tr -d ' ')"
             echo "::endgroup::"
           fi
@@ -159,6 +169,18 @@ jobs:
           if [ "$CONFLICT_COUNT" -eq 0 ]; then
             git add -A
             git commit -m "chore: merge upstream/main + sanitize" || echo "No changes to commit"
+
+            if [ -s "$RUNNER_TEMP/agent_conflict_files.txt" ]; then
+              {
+                echo "The merge is already committed with upstream/main as its second parent."
+                echo "These .github files conflicted and were provisionally resolved from the fork parent:"
+                echo ""
+                while IFS= read -r f; do
+                  [ -z "$f" ] && continue
+                  echo "- $f"
+                done < "$RUNNER_TEMP/agent_conflict_files.txt"
+              } > "$RUNNER_TEMP/semantic_conflict_summary.txt"
+            fi
           else
             # Write conflict scratch files OUTSIDE the work tree so the agent's
             # `git add -A` never commits them into the repo. Read back via $RUNNER_TEMP.
@@ -205,7 +227,6 @@ jobs:
             echo "::error::Deterministic upstream merge left $CONFLICTS conflict file(s); refusing the agent path because it would flatten upstream ancestry."
             exit 1
           fi
-          echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
 
           AHEAD=$(git rev-list --count origin/main..HEAD)
           echo "Commits ahead of origin/main: $AHEAD"
@@ -226,6 +247,15 @@ jobs:
             exit 1
           fi
           echo "Verified two-parent merge commit with upstream ancestry: $UPSTREAM_COMMIT"
+
+          AGENT_CONFLICTS="${OPENCODE_AGENT_CONFLICT_COUNT:-0}"
+          if [ "$AGENT_CONFLICTS" -gt 0 ]; then
+            echo "has_conflicts=true" >> "$GITHUB_OUTPUT"
+            echo "skip_agent=false" >> "$GITHUB_OUTPUT"
+            echo "Routing $AGENT_CONFLICTS provisionally resolved .github conflict file(s) to semantic agent review."
+            exit 0
+          fi
+          echo "has_conflicts=false" >> "$GITHUB_OUTPUT"
 
           # Reuse an already-open upstream-sync PR instead of spawning a duplicate.
           # Only matches bot-managed `opencode/upstream-sync-*` branches (never the
@@ -283,14 +313,15 @@ jobs:
           TASK_DESC="Synchronizing upstream and resolving conflicts."
           if [[ "$EVENT_NAME" == "schedule" || ( "$EVENT_NAME" == "workflow_dispatch" && ( "$DISPATCH_PROMPT" == "" || "$DISPATCH_PROMPT" == "null" ) ) ]]; then
             {
-              echo "A 'git merge upstream/main' has already been attempted. Automatic scripts have also fixed AnyKernel3 URLs, 'uname' fields, and KSUN removal."
+              echo "A real two-parent merge of upstream/main has already been committed. Automatic scripts have also fixed AnyKernel3 URLs, 'uname' fields, and KSUN removal."
               echo "Your primary task is to:"
-              echo "1. Resolve any UNRESOLVED CONFLICTS."
-              echo "2. Final audit against guidelines."
+              echo "1. Semantically reconcile every provisionally resolved .github file listed below. Compare HEAD^1 (fork) with HEAD^2 (upstream) and preserve compatible behavior from both."
+              echo "2. Keep the existing merge commit and upstream ancestry. Do not reset, rebase, rewrite, or replace it; make only a normal follow-up commit."
+              echo "3. Final audit against guidelines."
               echo ""
-              if [ -f "$RUNNER_TEMP/conflict_summary.txt" ]; then
-                echo "========== CONFLICT DETAILS =========="
-                cat "$RUNNER_TEMP/conflict_summary.txt"
+              if [ -f "$RUNNER_TEMP/semantic_conflict_summary.txt" ]; then
+                echo "========== SEMANTIC CONFLICT DETAILS =========="
+                cat "$RUNNER_TEMP/semantic_conflict_summary.txt"
                 echo "====================================="
                 echo ""
               fi
