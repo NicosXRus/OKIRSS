@@ -1137,6 +1137,34 @@ runs:
             rm mm/memory.c.rej
           fi
         
+          # Newer OnePlus sources omit trace/hooks/blk.h from namespace.c,
+          # so the SUSFS include/declaration hunk can miss its context even
+          # though the rest of the patch applies cleanly.
+          if [ -f fs/namespace.c.rej ] && \
+             grep -q 'CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c.rej && \
+             grep -q 'CL_COPY_MNT_NS' fs/namespace.c.rej; then
+            echo "Manually injecting SUSFS headers into fs/namespace.c..."
+            if ! grep -qxF '#include <linux/susfs_def.h>' fs/namespace.c; then
+              sed -i '/#include <linux\/mnt_idmapping.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS' fs/namespace.c
+            fi
+            if ! grep -qxF '#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */' fs/namespace.c; then
+              sed -i '/#include "internal.h"/a \\\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c
+            fi
+            rm fs/namespace.c.rej
+          fi
+
+          # Some vendor 5.15 trees also omit trace/hooks/mm.h, causing only
+          # the SUSFS task_mmu include hunk to miss its context.
+          if [ -f fs/proc/task_mmu.c.rej ] && \
+             grep -q 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/proc/task_mmu.c.rej && \
+             grep -q 'linux/susfs_def.h' fs/proc/task_mmu.c.rej; then
+            echo "Manually injecting SUSFS headers into fs/proc/task_mmu.c..."
+            if ! grep -qxF '#include <linux/susfs_def.h>' fs/proc/task_mmu.c; then
+              sed -i '/#include <linux\/pkeys.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)' fs/proc/task_mmu.c
+            fi
+            rm fs/proc/task_mmu.c.rej
+          fi
+
           # Check again for other real errors (unhandled .rej files, e.g., in avc.c)
           if [ -n "$(find . -name "*.rej")" ]; then
             echo "::error::SUSFS patch failed. Dumping all remaining .rej files:"
