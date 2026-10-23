@@ -2281,6 +2281,13 @@ runs:
             exit 1
             ;;
         esac
+
+        # The N6X vendor defconfig builds OPLUS_NFC together with the external
+        # OPLUS_FEATURE_OPROJECT module. A GKI-only build has no project module,
+        # so the driver's default-y setting otherwise leaves unresolved symbols.
+        if [ "$OP_MODEL" = "OP-N6X-5.15.197" ]; then
+          scripts/config --file "$OUT/.config" -d OPLUS_NFC
+        fi
         
         
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
