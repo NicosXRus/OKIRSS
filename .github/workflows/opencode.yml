@@ -132,7 +132,7 @@ jobs:
             #   * Fork-owned docs take OURS without agent review.
             #   * Everything else (device configs, manifests, kernel sources) takes
             #     UPSTREAM; sanitize.py below re-applies the deterministic fork
-            #     transforms (uname -> OP-RESUKISU, AnyKernel3 URL, oos* naming).
+            #     transforms (uname -> OP-BAKASU, AnyKernel3 URL, oos* naming).
             git ls-files -u 2>/dev/null | awk '{print $4}' | sort -u | while IFS= read -r f; do
               [ -z "$f" ] && continue
               case "$f" in

@@ -1,5 +1,5 @@
-name: 'Build OnePlus Kernel with KernelSU / ReSukiSU'
-description: 'GitHub Action to build OnePlus kernels with original KernelSU or ReSukiSU, and SUSFS integration, optimized for performance and reliability'
+name: 'Build OnePlus Kernel with KernelSU / BakaSU'
+description: 'GitHub Action to build OnePlus kernels with original KernelSU or BakaSU, and SUSFS integration, optimized for performance and reliability'
 inputs:
   op_config_json:
     description: 'JSON string containing full device config'
@@ -11,7 +11,7 @@ inputs:
     type: choice
     options:
       - KSU
-      - ReSukiSU
+      - BakaSU
   ksu_branch_or_hash:
     description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
     required: false
@@ -933,19 +933,19 @@ runs:
         echo "✅ KernelSU added (commit: ${KSU_COMMIT_SHA:0:8})"
         echo "::endgroup::"
 
-    - name: Add ReSukiSU (The Sukisaku Project)
+    - name: Add BakaSU (The Sukisaku Project)
       shell: bash
-      if: ${{ inputs.ksu_type == 'ReSukiSU' }}
+      if: ${{ inputs.ksu_type == 'BakaSU' }}
       run: |
         set -euo pipefail
-        echo "::group::Add ReSukiSU"
+        echo "::group::Add BakaSU"
         cd "$KERNEL_PLATFORM_FOLDER"
-        echo "Adding ReSukiSU..."
+        echo "Adding BakaSU..."
         
         if [ "${{ inputs.ksu_branch_or_hash }}" = "" ]; then
-          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -
         else
-          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s "${{ inputs.ksu_branch_or_hash }}"
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s "${{ inputs.ksu_branch_or_hash }}"
         fi
         
         cd KernelSU
@@ -958,12 +958,12 @@ runs:
         
         cd ..
         
-        echo "ReSukiSU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "BakaSU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
         echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
         echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
         
-        echo "ReSukiSU Version: $KSU_VERSION"
-        echo "✅ ReSukiSU added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "BakaSU Version: $KSU_VERSION"
+        echo "✅ BakaSU added (commit: ${KSU_COMMIT_SHA:0:8})"
         echo "::endgroup::"
 
     - name: Apply SUSFS Patches
@@ -999,7 +999,7 @@ runs:
               cd "$KSU_FOLDER"
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
             else
-              echo "ℹ️ Skipping KernelSU folder patch for ReSukiSU"
+              echo "ℹ️ Skipping KernelSU folder patch for BakaSU"
             fi
             ;;
           "v1.5.9"|"v1.5.10"|"v1.5.11"|"v1.5.12"|"v2.0.0"|"v2.1.0")
@@ -1007,7 +1007,7 @@ runs:
               cd "$KSU_FOLDER"
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
             else
-              echo "ℹ️ Skipping KernelSU folder patch for ReSukiSU"
+              echo "ℹ️ Skipping KernelSU folder patch for BakaSU"
             fi
             ;;
           "v2.2.0"|"v2.3.0")
@@ -1015,7 +1015,7 @@ runs:
               cd "$KSU_FOLDER"
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
             else
-              echo "ℹ️ Skipping KernelSU folder patch for ReSukiSU"
+              echo "ℹ️ Skipping KernelSU folder patch for BakaSU"
             fi
             ;;
           *)
@@ -1116,6 +1116,34 @@ runs:
             rm mm/memory.c.rej
           fi
         
+          # Newer OnePlus sources omit trace/hooks/blk.h from namespace.c,
+          # so the SUSFS include/declaration hunk can miss its context even
+          # though the rest of the patch applies cleanly.
+          if [ -f fs/namespace.c.rej ] && \
+             grep -q 'CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c.rej && \
+             grep -q 'CL_COPY_MNT_NS' fs/namespace.c.rej; then
+            echo "Manually injecting SUSFS headers into fs/namespace.c..."
+            if ! grep -qxF '#include <linux/susfs_def.h>' fs/namespace.c; then
+              sed -i '/#include <linux\/mnt_idmapping.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif // #ifdef CONFIG_KSU_SUSFS' fs/namespace.c
+            fi
+            if ! grep -qxF '#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */' fs/namespace.c; then
+              sed -i '/#include "internal.h"/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT' fs/namespace.c
+            fi
+            rm fs/namespace.c.rej
+          fi
+
+          # Some vendor 5.15 trees also omit trace/hooks/mm.h, causing only
+          # the SUSFS task_mmu include hunk to miss its context.
+          if [ -f fs/proc/task_mmu.c.rej ] && \
+             grep -q 'CONFIG_KSU_SUSFS_OPEN_REDIRECT' fs/proc/task_mmu.c.rej && \
+             grep -q 'linux/susfs_def.h' fs/proc/task_mmu.c.rej; then
+            echo "Manually injecting SUSFS headers into fs/proc/task_mmu.c..."
+            if ! grep -qxF '#include <linux/susfs_def.h>' fs/proc/task_mmu.c; then
+              sed -i '/#include <linux\/pkeys.h>/a #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n#include <linux/susfs_def.h>\n#endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)' fs/proc/task_mmu.c
+            fi
+            rm fs/proc/task_mmu.c.rej
+          fi
+
           # Check again for other real errors (unhandled .rej files, e.g., in avc.c)
           if [ -n "$(find . -name "*.rej")" ]; then
             echo "::error::SUSFS patch failed. Dumping all remaining .rej files:"
@@ -1126,11 +1154,11 @@ runs:
           fi
         fi
 
-        if [ "${{ inputs.ksu_type }}" = "ReSukiSU" ]; then
+        if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
           exec_file="./fs/exec.c"
           sed -i '/extern int ksu_install_su_fd(void);/d; /^[[:space:]]*ksu_install_su_fd();$/d' "$exec_file"
           if grep -Fq 'ksu_install_su_fd' "$exec_file"; then
-            echo "::error::Failed to remove unsupported ReSukiSU ksu_install_su_fd() call"
+            echo "::error::Failed to remove unsupported BakaSU ksu_install_su_fd() call"
             exit 1
           fi
         fi
@@ -1284,6 +1312,14 @@ runs:
             exit 1
           fi
         fi
+
+        case "$OP_BRANCH" in
+          wild/sm8850|wild/sm8845)
+            echo "Applying BBG efisp/abl conditional allowlist patch"
+            patch -p1 < "$KERNEL_PATCHES_FOLDER/common/bbg/0001-Enable-abl-and-efisp-flashing-for-efisp-exploit-devices.patch"
+            ;;
+        esac
+
         echo "✅ BBG LSM added"
         echo "::endgroup::"
 
@@ -2192,7 +2228,7 @@ runs:
         
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" gki_defconfig
         
-        LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-RESUKISU}"
+        LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-BAKASU}"
         if [ -n "${LOCAL_LOCALVERSION:-}" ]; then
           scripts/config --file "$OUT/.config" --set-str LOCALVERSION "${LOCAL_LOCALVERSION}"
           scripts/config --file "$OUT/.config" -d LOCALVERSION_AUTO || true
@@ -2224,6 +2260,13 @@ runs:
             exit 1
             ;;
         esac
+
+        # The N6X vendor defconfig builds OPLUS_NFC together with the external
+        # OPLUS_FEATURE_OPROJECT module. A GKI-only build has no project module,
+        # so the driver's default-y setting otherwise leaves unresolved symbols.
+        if [ "$OP_MODEL" = "OP-N6X-5.15.197" ]; then
+          scripts/config --file "$OUT/.config" -d OPLUS_NFC
+        fi
         
         
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
@@ -2462,6 +2505,19 @@ runs:
         cd "$AK3_FOLDER"
         
         sed -i 's/do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
+
+        if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
+          cp "$GITHUB_ACTION_PATH/assets/bakasu-banner" banner
+        fi
+
+        if [ "$OP_BBG" = "true" ]; then
+          case "$OP_BRANCH" in
+            wild/sm8850|wild/sm8845)
+              echo "Adding BBG efisp/abl allowlist selection menu"
+              patch -p1 < "$GITHUB_ACTION_PATH/patches/enable-bbg-efisp-selection.patch"
+              ;;
+          esac
+        fi
         
         ZIP_MODEL=$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')
         if [ "${{ env.OP_SUSFS }}" = true ]; then
@@ -2517,9 +2573,9 @@ runs:
           echo "Kernel Uname: ${{ env.KERNEL_UNAME }}"
           echo "Build User: ${{ env.BUILD_USER }}"
           echo "Build Host: ${{ env.BUILD_HOST }}"
-          if [ "${{ inputs.ksu_type }}" = "ReSukiSU" ]; then
-            echo "ReSukiSU Version: ${KSUVER:-unknown}"
-            echo "ReSukiSU commit SHA: ${KSU_SHA:-unknown}"
+          if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
+            echo "BakaSU Version: ${KSUVER:-unknown}"
+            echo "BakaSU commit SHA: ${KSU_SHA:-unknown}"
           else
             echo "KSU Version: ${KSUVER:-unknown}"
             echo "KSU commit SHA: ${KSU_SHA:-unknown}"
@@ -2567,15 +2623,15 @@ runs:
           echo "| **Build User** | ${{ env.BUILD_USER }} |"
           echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
           
-          if [ "${{ inputs.ksu_type }}" = "ReSukiSU" ]; then
-            echo "| **ReSukiSU Version** | ${KSUVER:-unknown} |"
+          if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
+            echo "| **BakaSU Version** | ${KSUVER:-unknown} |"
           else
             echo "| **KSU Version** | ${KSUVER:-unknown} |"
           fi
           
           if [ "$KSU_SHA" != "unknown" ]; then
-            if [ "${{ inputs.ksu_type }}" = "ReSukiSU" ]; then
-              echo "| **ReSukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/ReSukiSU/ReSukiSU/commit/$KSU_SHA) |"
+            if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
+              echo "| **BakaSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/Baka-SU/BakaSU/commit/$KSU_SHA) |"
             else
               echo "| **KSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/tiann/KernelSU/commit/$KSU_SHA) |"
             fi
