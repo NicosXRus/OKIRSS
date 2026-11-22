@@ -29,6 +29,11 @@ inputs:
     required: false
     type: string
     default: 'v1.3.1'
+  erofs_lzma:
+    description: 'Enable LZMA (microLZMA) support for EROFS images (CONFIG_EROFS_FS_ZIP_LZMA=y)'
+    required: false
+    type: boolean
+    default: false
   ksu_manager_cert_size:
     description: 'Manager signing certificate size (DER), hex, e.g. 0x02cc. Empty = auto-detect from the latest manager release (BakaSU, SukiSU-Nova, FinaSU)'
     required: false
@@ -2482,6 +2487,23 @@ runs:
         EOF
         echo "VPNHIDE_REF=$VPNHIDE_SHA" >> $GITHUB_ENV
         echo "✅ VPNHide builtin integrated ($KMI)"
+        echo "::endgroup::"
+
+    - name: Enable EROFS LZMA support
+      shell: bash
+      # Composite inputs arrive as strings, so compare against both forms.
+      if: ${{ inputs.erofs_lzma == true || inputs.erofs_lzma == 'true' }}
+      run: |
+        set -euo pipefail
+        echo "::group::Enable EROFS LZMA"
+        DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        # CONFIG_EROFS_FS_ZIP_LZMA selects XZ_DEC and XZ_DEC_MICROLZMA itself and only
+        # exists when EROFS_FS is enabled, so warn if the base config does not enable EROFS.
+        if ! grep -qE '^CONFIG_EROFS_FS=(y|m)$' "$DEFCONFIG"; then
+          echo "::warning::CONFIG_EROFS_FS is not enabled in gki_defconfig; EROFS LZMA will be dropped"
+        fi
+        echo "CONFIG_EROFS_FS_ZIP_LZMA=y" >> "$DEFCONFIG"
+        echo "✅ EROFS LZMA (microLZMA) support enabled"
         echo "::endgroup::"
 
     - name: Add Build based configs

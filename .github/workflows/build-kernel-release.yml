@@ -63,6 +63,11 @@ on:
         required: false
         type: string
         default: 'v1.3.1'
+      erofs_lzma:
+        description: 'Enable LZMA (microLZMA) support for EROFS images (CONFIG_EROFS_FS_ZIP_LZMA=y)'
+        required: false
+        type: boolean
+        default: false
       ksu_manager_cert_size:
         description: 'Manager signing cert size (DER) as hex, e.g. 0x02cc. Empty = auto-detect from the latest manager release (BakaSU, SukiSU-Nova, FinaSU)'
         required: false
@@ -851,6 +856,7 @@ jobs:
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
           vpnhide: ${{ inputs.vpnhide }}
           vpnhide_ref: ${{ inputs.vpnhide_ref }}
+          erofs_lzma: ${{ inputs.erofs_lzma }}
           ksu_manager_cert_size: ${{ inputs.ksu_manager_cert_size }}
           ksu_manager_cert_sha256: ${{ inputs.ksu_manager_cert_sha256 }}
           optimize_level: ${{ inputs.optimize_level }}
