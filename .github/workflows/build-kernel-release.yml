@@ -405,7 +405,11 @@ jobs:
           echo "susfs_hash_android16_6_12=${susfs_hashes[android16-6.12]:-unknown}" >> "$GITHUB_OUTPUT"
           
           # SUSFS_VERSION — only when releasing
-          if [ "${{ inputs.make_release }}" = "true" ]; then
+          if [ "${{ inputs.make_release }}" = "true" ] && [ "${#active_keys[@]}" -eq 0 ]; then
+            # No device builds with SuSFS (susfs switch off): nothing to check.
+            echo "ℹ️ SuSFS is off for all selected devices; release is marked 'none'."
+            echo "susfs_base_version=none" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.make_release }}" = "true" ]; then
             susfs_base_version="unknown"
             for key in "${active_keys[@]}"; do
               ver="${susfs_versions_per_key[$key]:-unknown}"
