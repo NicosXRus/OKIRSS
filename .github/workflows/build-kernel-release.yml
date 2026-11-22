@@ -63,6 +63,16 @@ on:
         required: false
         type: string
         default: 'v1.3.1'
+      ksu_manager_cert_size:
+        description: 'Manager signing cert size (DER) as hex, e.g. 0x02cc. Empty = auto-detect from the latest manager release (BakaSU, SukiSU-Nova, FinaSU)'
+        required: false
+        type: string
+        default: ''
+      ksu_manager_cert_sha256:
+        description: 'Manager signing cert SHA-256 (DER). Empty = auto-detect from the latest manager release (BakaSU, SukiSU-Nova, FinaSU)'
+        required: false
+        type: string
+        default: ''
       optimize_level:
         description: "Compiler optimization level"
         required: true
@@ -841,6 +851,8 @@ jobs:
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
           vpnhide: ${{ inputs.vpnhide }}
           vpnhide_ref: ${{ inputs.vpnhide_ref }}
+          ksu_manager_cert_size: ${{ inputs.ksu_manager_cert_size }}
+          ksu_manager_cert_sha256: ${{ inputs.ksu_manager_cert_sha256 }}
           optimize_level: ${{ inputs.optimize_level }}
           mlgo: ${{ inputs.mlgo }}
           build_timestamp: ${{ inputs.build_timestamp }}

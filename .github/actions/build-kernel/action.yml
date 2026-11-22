@@ -29,6 +29,16 @@ inputs:
     required: false
     type: string
     default: 'v1.3.1'
+  ksu_manager_cert_size:
+    description: 'Manager signing certificate size (DER), hex, e.g. 0x02cc. Empty = auto-detect from the latest manager release (BakaSU, SukiSU-Nova, FinaSU)'
+    required: false
+    type: string
+    default: ''
+  ksu_manager_cert_sha256:
+    description: 'SHA-256 of the manager signing certificate (DER). Empty = auto-detect from the latest manager release (BakaSU, SukiSU-Nova, FinaSU)'
+    required: false
+    type: string
+    default: ''
   susfs_commit_hash_or_branch:
     description: 'SUSFS branch or commit hash (empty = auto-detect by kernel version)'
     required: false
@@ -1107,12 +1117,116 @@ runs:
         fi
         # Without this, FinaSU silently disables preinit when usr/include is missing.
         echo "KSU_REQUIRE_PREINIT=1" >> $GITHUB_ENV
+        # Manager signing certificate is resolved by the "Resolve manager signing certificate" step.
 
         echo "FinaSU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
         echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
         echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
         echo "FinaSU Version: $KSU_VERSION"
         echo "✅ FinaSU added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "::endgroup::"
+
+    - name: Resolve manager signing certificate
+      shell: bash
+      if: ${{ inputs.ksu_type != 'KSU' }}
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        KSU_TYPE: ${{ inputs.ksu_type }}
+        MANUAL_SIZE: ${{ inputs.ksu_manager_cert_size }}
+        MANUAL_HASH: ${{ inputs.ksu_manager_cert_sha256 }}
+      run: |
+        set -euo pipefail
+        echo "::group::Resolve manager signing certificate"
+
+        # Kbuild trusts a manager APK only if it is signed with a certificate it knows.
+        # Each fork's Kbuild has its own variables: FinaSU keeps the official release key
+        # in the second trusted slot (built with KSU_SECOND_SIGNATURE_RELEASE=1), while
+        # BakaSU and SukiSU-Nova use the primary KSU_EXPECTED_* pair.
+        SIZE=""
+        HASH=""
+        SOURCE=""
+        MANAGER_REPO=""
+        case "$KSU_TYPE" in
+          BakaSU)      MANAGER_REPO="Baka-SU/BakaSU" ;;
+          SukiSU-Nova) MANAGER_REPO="SukiSU-Nova/SukiSU-Nova" ;;
+          FinaSU)      MANAGER_REPO="LyraVoid/FinaSU" ;;
+        esac
+
+        # Written to a file so the script stays readable and the YAML does not need escaping.
+        cat > "$RUNNER_TEMP/manager_cert.py" <<'PY'
+        import hashlib
+        import sys
+
+        from androguard.core.apk import APK
+
+        apk = APK(sys.argv[1])
+        for getter in (apk.get_certificates_der_v2, apk.get_certificates_der_v3):
+            try:
+                certs = getter()
+            except Exception:
+                certs = []
+            if certs:
+                der = certs[0]
+                print(f"{len(der):#06x} {hashlib.sha256(der).hexdigest()}")
+                sys.exit(0)
+        print("NONE")
+        PY
+
+        detect_from_release() {
+          local assets apk_url venv result WORK="$RUNNER_TEMP/manager-cert"
+          mkdir -p "$WORK"
+          assets=$(gh api "repos/$MANAGER_REPO/releases/latest" --jq '.assets[].browser_download_url') || return 1
+          # Prefer a release-signed APK; fall back to any APK asset.
+          apk_url=$(printf '%s\n' "$assets" | grep -i '\.apk$' | grep -i 'release' | head -n1) || true
+          [ -n "$apk_url" ] || apk_url=$(printf '%s\n' "$assets" | grep -i '\.apk$' | head -n1) || true
+          [ -n "$apk_url" ] || return 1
+          echo "Manager APK: $apk_url"
+          curl -fsSL --retry 3 -o "$WORK/manager.apk" "$apk_url" || return 1
+          venv="$RUNNER_TEMP/cert-venv"
+          [ -x "$venv/bin/python" ] || python3 -m venv "$venv" || return 1
+          "$venv/bin/pip" install -q androguard==4.1.4 || return 1
+          result=$("$venv/bin/python" "$RUNNER_TEMP/manager_cert.py" "$WORK/manager.apk" 2>/dev/null) || return 1
+          [ "$result" != "NONE" ] || return 1
+          AUTO_SIZE="${result%% *}"
+          AUTO_HASH="${result#* }"
+          return 0
+        }
+
+        if [ -n "$MANUAL_SIZE$MANUAL_HASH" ]; then
+          [[ "$MANUAL_SIZE" =~ ^0x[0-9a-fA-F]+$ ]] || { echo "::error::ksu_manager_cert_size must look like 0x02cc"; exit 1; }
+          [[ "$MANUAL_HASH" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "::error::ksu_manager_cert_sha256 must be 64 hex chars"; exit 1; }
+          SIZE="$MANUAL_SIZE"
+          HASH="$MANUAL_HASH"
+          SOURCE="workflow inputs"
+        elif [ -n "$MANAGER_REPO" ]; then
+          if detect_from_release; then
+            SIZE="$AUTO_SIZE"
+            HASH="$AUTO_HASH"
+            SOURCE="latest $MANAGER_REPO release"
+          else
+            echo "::warning::Could not read the manager certificate from $MANAGER_REPO; using the Kbuild default"
+          fi
+        fi
+
+        if [ -n "$SIZE" ]; then
+          if [ "$KSU_TYPE" = "FinaSU" ]; then
+            echo "KSU_EXPECTED_SIZE2=$SIZE" >> "$GITHUB_ENV"
+            echo "KSU_EXPECTED_HASH2=$HASH" >> "$GITHUB_ENV"
+            echo "KSU_SECOND_SIGNATURE_RELEASE=1" >> "$GITHUB_ENV"
+          else
+            echo "KSU_EXPECTED_SIZE=$SIZE" >> "$GITHUB_ENV"
+            echo "KSU_EXPECTED_HASH=$HASH" >> "$GITHUB_ENV"
+          fi
+          echo "Manager certificate: size=$SIZE sha256=$HASH (source: $SOURCE)"
+          {
+            echo "### Manager certificate ($KSU_TYPE)"
+            echo "- size: \`$SIZE\`"
+            echo "- sha256: \`$HASH\`"
+            echo "- source: $SOURCE"
+          } >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "Manager certificate: Kbuild default for $KSU_TYPE"
+        fi
         echo "::endgroup::"
 
     - name: Apply upstream kernel compat fixes (non-SUSFS rules)
