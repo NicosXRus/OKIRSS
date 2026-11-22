@@ -1,22 +1,34 @@
-name: 'Build OnePlus Kernel with KernelSU / BakaSU'
-description: 'GitHub Action to build OnePlus kernels with original KernelSU or BakaSU, and SUSFS integration, optimized for performance and reliability'
+name: 'Build OnePlus Kernel with KernelSU / BakaSU / SukiSU-Nova / FinaSU'
+description: 'GitHub Action to build OnePlus kernels with KernelSU, BakaSU, SukiSU-Nova or FinaSU, SUSFS integration and optional builtin VPNHide, optimized for performance and reliability'
 inputs:
   op_config_json:
     description: 'JSON string containing full device config'
     required: true
     type: string
   ksu_type:
-    description: 'Select KSU Type'
+    description: 'Select root solution (KSU, BakaSU, SukiSU-Nova, FinaSU)'
     required: true
     type: choice
     options:
       - KSU
       - BakaSU
+      - SukiSU-Nova
+      - FinaSU
   ksu_branch_or_hash:
-    description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
+    description: 'Root repo branch, tag or commit hash (empty = upstream default for ksu_type)'
     required: false
     type: string
     default: ""
+  vpnhide:
+    description: 'Integrate VPNHide builtin kernel backend (CONFIG_VPNHIDE=y)'
+    required: false
+    type: boolean
+    default: false
+  vpnhide_ref:
+    description: 'VPNHide git tag or commit to vendor into the kernel tree'
+    required: false
+    type: string
+    default: 'v1.3.1'
   susfs_commit_hash_or_branch:
     description: 'SUSFS branch or commit hash (empty = auto-detect by kernel version)'
     required: false
@@ -1011,6 +1023,98 @@ runs:
         echo "✅ BakaSU added (commit: ${KSU_COMMIT_SHA:0:8})"
         echo "::endgroup::"
 
+    - name: Add SukiSU-Nova
+      shell: bash
+      if: ${{ inputs.ksu_type == 'SukiSU-Nova' }}
+      run: |
+        set -euo pipefail
+        echo "::group::Add SukiSU-Nova"
+        cd "$KERNEL_PLATFORM_FOLDER"
+        echo "Adding SukiSU-Nova..."
+        NOVA_REF="${{ inputs.ksu_branch_or_hash }}"
+
+        # setup.sh in the repo clones from a private mirror, so the repo is cloned
+        # here from GitHub instead. setup.sh finds KernelSU/ already present and
+        # only checks out the ref and wires drivers/. Full clone: the version is
+        # derived from the commit count, and the ref may be a commit hash.
+        rm -rf KernelSU
+        git clone https://github.com/SukiSU-Nova/SukiSU-Nova.git KernelSU
+        # Run a copy of the script: checkouts inside the run must not rewrite it.
+        cp KernelSU/kernel/setup.sh "$RUNNER_TEMP/sukisu-nova-setup.sh"
+        if [ -z "$NOVA_REF" ]; then
+          bash "$RUNNER_TEMP/sukisu-nova-setup.sh"
+        else
+          bash "$RUNNER_TEMP/sukisu-nova-setup.sh" "$NOVA_REF"
+        fi
+
+        cd KernelSU
+        # Same formula as kernel/Kbuild: VERSION_BASE (30000) + commit count + VERSION_OFFSET (996)
+        KSU_VERSION=$(expr 30000 + "$(git rev-list --count HEAD)" + 996)
+        KSU_COMMIT_SHA=$(git rev-parse HEAD)
+        cd ..
+        echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> $GITHUB_ENV
+
+        echo "Add KSU Configuration Settings"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_KSU=y
+        EOF
+
+        echo "SukiSU-Nova" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+        echo "SukiSU-Nova Version: $KSU_VERSION"
+        echo "✅ SukiSU-Nova added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "::endgroup::"
+
+    - name: Add FinaSU
+      shell: bash
+      if: ${{ inputs.ksu_type == 'FinaSU' }}
+      run: |
+        set -euo pipefail
+        echo "::group::Add FinaSU"
+        cd "$KERNEL_PLATFORM_FOLDER"
+        echo "Adding FinaSU..."
+        FINASU_REF="${{ inputs.ksu_branch_or_hash }}"
+        if [ -z "$FINASU_REF" ]; then
+          FINASU_REF="main"
+        fi
+
+        # Clone and check out here, then hand the checkout to kernel/setup.sh --dir,
+        # which symlinks kernel/ to drivers/kernelsu and wires Makefile/Kconfig.
+        rm -rf KernelSU
+        git clone https://github.com/LyraVoid/FinaSU.git KernelSU
+        git -C KernelSU checkout "$FINASU_REF"
+        cp KernelSU/kernel/setup.sh "$RUNNER_TEMP/finasu-setup.sh"
+        bash "$RUNNER_TEMP/finasu-setup.sh" --dir "$KERNEL_PLATFORM_FOLDER/KernelSU"
+
+        cd KernelSU
+        # Same formula as kernel/Kbuild: 30000 + commit count
+        KSU_VERSION=$(expr 30000 + "$(git rev-list --count HEAD)")
+        KSU_COMMIT_SHA=$(git rev-parse HEAD)
+        cd ..
+        echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> $GITHUB_ENV
+
+        echo "Add KSU Configuration Settings"
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_KSU=y
+        CONFIG_KPROBES=y
+        CONFIG_KALLSYMS_ALL=y
+        CONFIG_EXT4_FS=y
+        CONFIG_HEADERS_INSTALL=y
+        EOF
+        if [ "${{ env.OP_SUSFS }}" = true ]; then
+          echo "CONFIG_THREAD_INFO_IN_TASK=y" >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+        fi
+        # Without this, FinaSU silently disables preinit when usr/include is missing.
+        echo "KSU_REQUIRE_PREINIT=1" >> $GITHUB_ENV
+
+        echo "FinaSU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
+        echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+        echo "FinaSU Version: $KSU_VERSION"
+        echo "✅ FinaSU added (commit: ${KSU_COMMIT_SHA:0:8})"
+        echo "::endgroup::"
+
     - name: Apply upstream kernel compat fixes (non-SUSFS rules)
       shell: bash
       run: |
@@ -1122,7 +1226,19 @@ runs:
             exit 1
             ;;
         esac
-        
+
+        # Root-specific SUSFS gaps. Warnings only: the build still runs.
+        if [ -d "$KSU_FOLDER" ]; then
+          # SUSFS 2.4.0 needs the root to call both registration hooks (non-extern uses).
+          if ! version_lte "${susfs_version:1}" "2.3.0" && \
+             ! grep -rhs 'susfs_add_sus_type(\|susfs_add_sus_avd_allowed_by_type(' "$KSU_FOLDER/kernel" | grep -v 'extern' >/dev/null; then
+            echo "::warning::SUSFS $susfs_version expects the root to call susfs_add_sus_type and susfs_add_sus_avd_allowed_by_type. ${{ inputs.ksu_type }} does not, so SUSFS 2.4.0 hiding may be incomplete on this root."
+          fi
+          if ! grep -qs '^config KSU_SUSFS$' "$KSU_FOLDER/kernel/Kconfig"; then
+            echo "::warning::${{ inputs.ksu_type }} does not declare CONFIG_KSU_SUSFS in kernel/Kconfig. The SUSFS options written to gki_defconfig will be dropped by olddefconfig."
+          fi
+        fi
+
         cd "$COMMON_KERNEL_FOLDER"
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
@@ -2214,6 +2330,45 @@ runs:
         echo "✅ Droidspaces Support applied"
         echo "::endgroup::"
 
+    - name: Integrate VPNHide (builtin backend)
+      shell: bash
+      if: ${{ inputs.vpnhide == true }}
+      run: |
+        set -euo pipefail
+        echo "::group::Integrate VPNHide builtin"
+        VPNHIDE_REF="${{ inputs.vpnhide_ref }}"
+        VPNHIDE_DIR="$RUNNER_TEMP/vpnhide"
+        KMI="${ANDROID_VER}-${KERNEL_VER}"
+
+        # Fetch by tag or commit. builtin/scripts/integrate.py reads its own
+        # vendored sources (kmod/shared, kmod/generated) from this checkout.
+        rm -rf "$VPNHIDE_DIR"
+        git init -q "$VPNHIDE_DIR"
+        git -C "$VPNHIDE_DIR" fetch -q --depth 1 https://github.com/okhsunrog/vpnhide.git "$VPNHIDE_REF"
+        git -C "$VPNHIDE_DIR" checkout -q FETCH_HEAD
+        VPNHIDE_SHA=$(git -C "$VPNHIDE_DIR" rev-parse HEAD)
+        echo "VPNHide ref $VPNHIDE_REF -> $VPNHIDE_SHA (KMI $KMI)"
+
+        if ! command -v uv >/dev/null 2>&1; then
+          python3 -m pip install --user --break-system-packages uv >/dev/null
+          export PATH="$HOME/.local/bin:$PATH"
+        fi
+
+        # Applies call-site patches to the tree as it is now (SUSFS and compat
+        # already in place) and copies security/vpnhide into it. Refuses to run
+        # on a KMI it has no rules for, and refuses an output dir inside the tree.
+        uv run --python 3.12 --no-project python "$VPNHIDE_DIR/builtin/scripts/integrate.py" apply \
+          --kernel "$COMMON_KERNEL_FOLDER" \
+          --kmi "$KMI" \
+          --output "$RUNNER_TEMP/vpnhide-review-$KMI"
+
+        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        CONFIG_VPNHIDE=y
+        EOF
+        echo "VPNHIDE_REF=$VPNHIDE_SHA" >> $GITHUB_ENV
+        echo "✅ VPNHide builtin integrated ($KMI)"
+        echo "::endgroup::"
+
     - name: Add Build based configs
       shell: bash
       run: |
@@ -2786,16 +2941,14 @@ runs:
           echo "Kernel Uname: ${{ env.KERNEL_UNAME }}"
           echo "Build User: ${{ env.BUILD_USER }}"
           echo "Build Host: ${{ env.BUILD_HOST }}"
-          if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
-            echo "BakaSU Version: ${KSUVER:-unknown}"
-            echo "BakaSU commit SHA: ${KSU_SHA:-unknown}"
-          else
-            echo "KSU Version: ${KSUVER:-unknown}"
-            echo "KSU commit SHA: ${KSU_SHA:-unknown}"
-          fi
+          echo "${{ inputs.ksu_type }} Version: ${KSUVER:-unknown}"
+          echo "${{ inputs.ksu_type }} commit SHA: ${KSU_SHA:-unknown}"
           if [ "${{ env.OP_SUSFS }}" = true ]; then
             echo "SUSFS Version: ${SUSVER:-unknown}"
             echo "SUSFS commit SHA: $SUSFS_SHA"
+          fi
+          if [ "${{ inputs.vpnhide }}" = "true" ]; then
+            echo "VPNHide ref: ${VPNHIDE_REF:-unknown}"
           fi
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "Clean Build: ${{ inputs.clean }}"
@@ -2836,22 +2989,24 @@ runs:
           echo "| **Build User** | ${{ env.BUILD_USER }} |"
           echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
           
-          if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
-            echo "| **BakaSU Version** | ${KSUVER:-unknown} |"
-          else
-            echo "| **KSU Version** | ${KSUVER:-unknown} |"
-          fi
-          
+          echo "| **${{ inputs.ksu_type }} Version** | ${KSUVER:-unknown} |"
+
+          case "${{ inputs.ksu_type }}" in
+            BakaSU) KSU_REPO_URL="https://github.com/Baka-SU/BakaSU" ;;
+            SukiSU-Nova) KSU_REPO_URL="https://github.com/SukiSU-Nova/SukiSU-Nova" ;;
+            FinaSU) KSU_REPO_URL="https://github.com/LyraVoid/FinaSU" ;;
+            *) KSU_REPO_URL="https://github.com/tiann/KernelSU" ;;
+          esac
           if [ "$KSU_SHA" != "unknown" ]; then
-            if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
-              echo "| **BakaSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/Baka-SU/BakaSU/commit/$KSU_SHA) |"
-            else
-              echo "| **KSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/tiann/KernelSU/commit/$KSU_SHA) |"
-            fi
+            echo "| **${{ inputs.ksu_type }} Commit** | [\`${KSU_SHA:0:8}\`]($KSU_REPO_URL/commit/$KSU_SHA) |"
           else
-            echo "| **KSU Commit** | unknown |"
+            echo "| **${{ inputs.ksu_type }} Commit** | unknown |"
           fi
-          
+
+          if [ "${{ inputs.vpnhide }}" = "true" ]; then
+            echo "| **VPNHide (builtin)** | ${VPNHIDE_REF:-unknown} |"
+          fi
+
           if [ "${{ env.OP_SUSFS }}" = true ]; then
             echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
             

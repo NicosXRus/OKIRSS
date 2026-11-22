@@ -67,6 +67,9 @@ Flashing this kernel will not void your warranty, but there is always a risk of 
 ## ✨ Features
 
 - 🔐 **BakaSU**: Kernel-based Android Root Solution,forked from sukisu
+- 🧭 **SukiSU-Nova**: Selectable root solution (build option)
+- 🧭 **FinaSU**: Selectable root solution, built in with SUSFS (build option)
+- 🕵️ **VPNHide**: Optional builtin kernel backend that hides VPN interfaces from selected apps (`vpnhide` input, off by default)
 - 🥷 **SUSFS**: An addon root hiding kernel patches and userspace module for KernelSU
 - 🛡️ **BBG**: LSM-based Baseband Guard security to protect critical device partitions. abl/efisp can be added to whitelist for efisp exploit devices.
 - 🛠️ **HMBIRD SCX**: Scheduler extensions for SM8750/MT6991 devices
@@ -88,6 +91,9 @@ Flashing this kernel will not void your warranty, but there is always a risk of 
 
 - **KernelSU**: Developed by [tiann](https://github.com/tiann/KernelSU).
 - **BakaSU**: Developed by [BakaSU Team](https://github.com/Baka-SU/BakaSU)
+- **SukiSU-Nova**: Developed by [SukiSU-Nova](https://github.com/SukiSU-Nova/SukiSU-Nova)
+- **FinaSU**: Developed by [LyraVoid](https://github.com/LyraVoid/FinaSU)
+- **VPNHide**: Developed by [okhsunrog](https://github.com/okhsunrog/vpnhide)
 - **Magic-KSU**: Developed by [5ec1cff](https://github.com/5ec1cff/KernelSU).  
 - **SUSFS**: Developed by [simonpunk](https://gitlab.com/simonpunk/susfs4ksu.git).
 - **SUSFS Module**: Developed by [sidex15](https://github.com/sidex15).

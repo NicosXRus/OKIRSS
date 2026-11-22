@@ -35,17 +35,34 @@ on:
         type: string
         default: ''
       ksu_type:
-        description: 'Select KSU Type'
+        description: 'Select root solution (BakaSU, KSU, SukiSU-Nova, FinaSU)'
         required: true
         type: choice
         options:
           - BakaSU
           - KSU
+          - SukiSU-Nova
+          - FinaSU
         default: BakaSU
       ksu_branch_or_hash:
-        description: 'KSU branch or commit hash'
+        description: 'Root repo branch, tag or commit hash'
         type: string
         default: 'main'
+      susfs:
+        description: 'SuSFS integration: on = as set in each device config, off = build every selected device without SuSFS'
+        required: true
+        type: boolean
+        default: true
+      vpnhide:
+        description: 'Integrate VPNHide builtin kernel backend (CONFIG_VPNHIDE=y)'
+        required: false
+        type: boolean
+        default: false
+      vpnhide_ref:
+        description: 'VPNHide tag or commit (used only when vpnhide is enabled)'
+        required: false
+        type: string
+        default: 'v1.3.1'
       optimize_level:
         description: "Compiler optimization level"
         required: true
@@ -209,11 +226,14 @@ jobs:
             exit 1
           fi
           
-          # Inject KSU type and hash into every device config
+          # Inject KSU type and hash into every device config. The susfs input
+          # switch: false forces susfs=false on every selected device, which also
+          # drops the SUSFS hash resolution below (it reads this merged matrix).
           merged_matrix=$(jq \
             --arg ksu_type "$ksu_type" \
             --arg ksu_hash "$ksu_hash" \
-            '[.[] | . + {ksu_type: $ksu_type, ksu_hash: $ksu_hash}]' \
+            --argjson susfs_on "${{ inputs.susfs }}" \
+            '[.[] | . + {ksu_type: $ksu_type, ksu_hash: $ksu_hash} | if $susfs_on then . else .susfs = false end]' \
             <<<"$filtered")
           final_count=$(echo "$merged_matrix" | jq 'length')
           
@@ -227,13 +247,12 @@ jobs:
           ksu_type="${{ inputs.ksu_type }}"
           ksu_ref="${{ inputs.ksu_branch_or_hash }}"
           
-          if [ "$ksu_type" == "BakaSU" ]; then
-            KSU_REPO_OWNER="Baka-SU"
-            KSU_REPO_NAME="BakaSU"
-          else
-            KSU_REPO_OWNER="tiann"
-            KSU_REPO_NAME="KernelSU"
-          fi
+          case "$ksu_type" in
+            BakaSU) KSU_REPO_OWNER="Baka-SU"; KSU_REPO_NAME="BakaSU" ;;
+            SukiSU-Nova) KSU_REPO_OWNER="SukiSU-Nova"; KSU_REPO_NAME="SukiSU-Nova" ;;
+            FinaSU) KSU_REPO_OWNER="LyraVoid"; KSU_REPO_NAME="FinaSU" ;;
+            *) KSU_REPO_OWNER="tiann"; KSU_REPO_NAME="KernelSU" ;;
+          esac
           
           HEAD_REF="refs/heads/${ksu_ref}"
           TAG_REF="refs/tags/${ksu_ref}"
@@ -816,6 +835,8 @@ jobs:
           ksu_type: ${{ matrix.ksu_type }}
           ksu_branch_or_hash: ${{ matrix.ksu_resolved_hash }}
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
+          vpnhide: ${{ inputs.vpnhide }}
+          vpnhide_ref: ${{ inputs.vpnhide_ref }}
           optimize_level: ${{ inputs.optimize_level }}
           mlgo: ${{ inputs.mlgo }}
           build_timestamp: ${{ inputs.build_timestamp }}
@@ -843,11 +864,7 @@ jobs:
             echo ""
             echo "Outputs:"
             echo "  - Kernel: ${{ steps.build.outputs.kernel_version }}"
-            if [ "${{ matrix.ksu_type }}" = "BakaSU" ]; then
-              echo "  - BakaSU: v${{ steps.build.outputs.ksu_version }}"
-            else
-              echo "  - KSU: v${{ steps.build.outputs.ksu_version }}"
-            fi
+            echo "  - ${{ matrix.ksu_type }}: v${{ steps.build.outputs.ksu_version }}"
             
             echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
             
@@ -894,15 +911,9 @@ jobs:
           |--------|-------|
           | **Kernel** | ${{ steps.build.outputs.kernel_version }} |
           EOF
-            if [ "${{ matrix.ksu_type }}" = "BakaSU" ]; then
-              cat >> $GITHUB_STEP_SUMMARY << EOF
-          | **BakaSU** | v${{ steps.build.outputs.ksu_version }} |
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          | **${{ matrix.ksu_type }}** | v${{ steps.build.outputs.ksu_version }} |
           EOF
-            else
-              cat >> $GITHUB_STEP_SUMMARY << EOF
-          | **KSU** | v${{ steps.build.outputs.ksu_version }} |
-          EOF
-            fi
             
             if [ "${{ matrix.susfs }}" = true ]; then
               cat >> $GITHUB_STEP_SUMMARY << EOF
@@ -1206,6 +1217,16 @@ jobs:
           | **KernelSU Branch** | \`$ksu_display\` |
           | **KernelSU Version** | \`$ksu_ver_global\` |
           EOF
+          elif [ "$ksu_type" == "SukiSU-Nova" ]; then
+            cat << EOF >> release_notes.md
+          | **SukiSU-Nova Branch/Hash** | \`$ksu_display\` |
+          | **SukiSU-Nova Version** | \`$ksu_ver_global\` |
+          EOF
+          elif [ "$ksu_type" == "FinaSU" ]; then
+            cat << EOF >> release_notes.md
+          | **FinaSU Branch/Hash** | \`$ksu_display\` |
+          | **FinaSU Version** | \`$ksu_ver_global\` |
+          EOF
           fi
           
           cat << EOF >> release_notes.md
@@ -1236,6 +1257,19 @@ jobs:
           elif [ "$ksu_type" == "KSU" ]; then
             cat << EOF >> release_notes.md
           - **KernelSU** - Kernel-level root solution
+          EOF
+          elif [ "$ksu_type" == "SukiSU-Nova" ]; then
+            cat << EOF >> release_notes.md
+          - **SukiSU-Nova** - Kernel-based Android root solution, [source](https://github.com/SukiSU-Nova/SukiSU-Nova)
+          EOF
+          elif [ "$ksu_type" == "FinaSU" ]; then
+            cat << EOF >> release_notes.md
+          - **FinaSU** - Kernel-based Android root solution, [source](https://github.com/LyraVoid/FinaSU)
+          EOF
+          fi
+          if [ "${{ inputs.vpnhide }}" = "true" ]; then
+            cat << EOF >> release_notes.md
+          - **VPNHide** - builtin kernel backend (\`${VPNHIDE_REF:-unknown}\`), [source](https://github.com/okhsunrog/vpnhide)
           EOF
           fi
           cat << EOF >> release_notes.md
@@ -1289,6 +1323,16 @@ jobs:
           - **BakaSU Manager**  
             → [Offical Documentation](https://bakasu.org)
           EOF
+          elif [ "$ksu_type" == "SukiSU-Nova" ]; then
+            cat << EOF >> release_notes.md
+          - **SukiSU-Nova Manager**  
+            → [GitHub Release](https://github.com/SukiSU-Nova/SukiSU-Nova/releases)
+          EOF
+          elif [ "$ksu_type" == "FinaSU" ]; then
+            cat << EOF >> release_notes.md
+          - **FinaSU Manager**  
+            → [GitHub Release](https://github.com/LyraVoid/FinaSU/releases)
+          EOF
           elif [ "$ksu_type" == "KSU" ]; then
             cat << EOF >> release_notes.md
           - **KernelSU Manager**  
@@ -1323,7 +1367,8 @@ jobs:
           ## 📜 Changelog
           
           ### This Release
-          - Migrated to Action input menu for KSU/BakaSU choice.
+          - Root choice in the action menu: BakaSU, KSU, SukiSU-Nova, FinaSU.
+          - Optional builtin VPNHide backend (CONFIG_VPNHIDE=y).
           - Updated SUSFS to $SUSFS_BASE_VERSION.
           - Added HMBIRD support for all SM8750/MT6991 devices.
           - Improved ccache build system.
@@ -1345,6 +1390,9 @@ jobs:
           ## 🙏 Credits
           
           - **BakaSU Team** - Root solution
+          - **SukiSU-Nova** - Root solution
+          - **LyraVoid (FinaSU)** - Root solution
+          - **okhsunrog** - VPNHide
           - **simonpunk** - SUSFS development
           - **OnePlus** - Kernel source code
           - **Community Contributors** - Testing and feedback
