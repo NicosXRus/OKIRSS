@@ -2446,7 +2446,8 @@ runs:
 
     - name: Integrate VPNHide (builtin backend)
       shell: bash
-      if: ${{ inputs.vpnhide == true }}
+      # Composite inputs arrive as strings, so `== true` alone never matches.
+      if: ${{ inputs.vpnhide == true || inputs.vpnhide == 'true' }}
       run: |
         set -euo pipefail
         echo "::group::Integrate VPNHide builtin"
