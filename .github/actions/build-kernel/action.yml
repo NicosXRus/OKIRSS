@@ -2445,7 +2445,16 @@ runs:
         echo "Customize Kernel Branding"
         cd "$COMMON_KERNEL_FOLDER"
         mkdir -p out
-        CUSTOM_LOCALVERSION="-${ANDROID_VER}-${OP_UNAME}-${{ github.actor }}"
+        # Root tag comes from the selected root, not from the device config's
+        # "uname" field (which is OP-BAKASU in every config).
+        case "${{ inputs.ksu_type }}" in
+          BakaSU) ROOT_TAG="OP-BAKASU" ;;
+          KSU) ROOT_TAG="OP-KSU" ;;
+          SukiSU-Nova) ROOT_TAG="OP-SUKISU-NOVA" ;;
+          FinaSU) ROOT_TAG="OP-FINASU" ;;
+          *) ROOT_TAG="OP-${{ inputs.ksu_type }}" ;;
+        esac
+        CUSTOM_LOCALVERSION="-${ANDROID_VER}-${ROOT_TAG}-${{ github.actor }}"
         echo "CUSTOM_LOCALVERSION=$CUSTOM_LOCALVERSION" >> "$GITHUB_ENV"
 
     - name: Disable GPUEB
