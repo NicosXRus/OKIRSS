@@ -3015,8 +3015,12 @@ runs:
         mv "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt" "$AK3_FOLDER/"
         cd "$AK3_FOLDER"
         
+        # Replace the upstream AnyKernel3 script text (branding) with ours before the local tweaks.
+        cp "$GITHUB_ACTION_PATH/assets/anykernel.sh" anykernel.sh
         sed -i 's/do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
 
+        # NicosXRus banner for every build; BakaSU keeps its own art on top.
+        cp "$GITHUB_ACTION_PATH/assets/banner" banner
         if [ "${{ inputs.ksu_type }}" = "BakaSU" ]; then
           cp "$GITHUB_ACTION_PATH/assets/bakasu-banner" banner
         fi
